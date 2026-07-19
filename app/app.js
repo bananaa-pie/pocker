@@ -106,16 +106,32 @@ function load() {
 // ——— club memory: roster + archive persist separately from the current tournament ———
 const ROSTER_KEY = 'pkRoster.v1';
 const ARCHIVE_KEY = 'pkArchive.v1';
+const TEMPLATES_KEY = 'pkTemplates.v1';
 let roster = [];   // [{ name }]
 let archive = [];  // [{ date, bank, entries, players:[{name, paid, payout, net, place}] }]
+let templates = []; // user-saved structure presets
+
+// which state fields make up a "structure template"
+const TPL_FIELDS = ['levels', 'rebuyLevels', 'buyIn', 'rebuyAmount', 'startingStack', 'addonAmount', 'addonStack', 'split1', 'split2', 'split3'];
+function templateFromState(s) {
+  const t = {};
+  TPL_FIELDS.forEach(k => { t[k] = k === 'levels' ? s.levels.map(l => ({ ...l })) : s[k]; });
+  return t;
+}
+// built-in preset = the code default, so it's identical on every device
+const BUILTIN_TEMPLATES = [Object.assign({ name: 'Домашняя (база)', builtin: true }, templateFromState(defaultState()))];
+function allTemplates() { return [...BUILTIN_TEMPLATES, ...templates]; }
+
 function loadClub() {
   try { const r = JSON.parse(localStorage.getItem(ROSTER_KEY)); if (Array.isArray(r)) roster = r; } catch (e) {}
   try { const a = JSON.parse(localStorage.getItem(ARCHIVE_KEY)); if (Array.isArray(a)) archive = a; } catch (e) {}
+  try { const t = JSON.parse(localStorage.getItem(TEMPLATES_KEY)); if (Array.isArray(t)) templates = t; } catch (e) {}
   archive.forEach(t => { if (!t.id) t.id = rndId(); }); // stable ids for cloud merge
   saveArchive();
 }
 function saveRoster() { try { localStorage.setItem(ROSTER_KEY, JSON.stringify(roster)); } catch (e) {} }
 function saveArchive() { try { localStorage.setItem(ARCHIVE_KEY, JSON.stringify(archive)); } catch (e) {} }
+function saveTemplates() { try { localStorage.setItem(TEMPLATES_KEY, JSON.stringify(templates)); } catch (e) {} }
 function rosterAdd(name) {
   const n = (name || '').trim();
   if (!n) return;
@@ -559,6 +575,32 @@ const actions = {
   // ——— structure: insert a break level ———
   addBreak: () => setState(s => ({ levels: [...s.levels, { type: 'break', sb: 0, bb: 0, ante: 0, dur: 10, colorUp: false }] })),
 
+  // ——— structure templates (presets) ———
+  applyTemplate: (e) => {
+    const tpl = allTemplates()[+e.currentTarget.dataset.idx];
+    if (!tpl) return;
+    const patch = { currentLevel: 0 };
+    TPL_FIELDS.forEach(k => { patch[k] = k === 'levels' ? tpl.levels.map(l => ({ ...l })) : tpl[k]; });
+    state.timer = { endsAt: null, remainingMs: ((tpl.levels[0] && tpl.levels[0].dur) || 12) * 60000, running: false };
+    setState(patch);
+    showToast('Шаблон применён: ' + tpl.name);
+  },
+  saveTemplate: () => {
+    const el = document.getElementById('tpl-name');
+    const name = (el && el.value || '').trim();
+    if (!name) { showToast('Впишите название шаблона'); return; }
+    const existing = templates.findIndex(t => t.name.toLowerCase() === name.toLowerCase());
+    const tpl = Object.assign({ name }, templateFromState(state));
+    if (existing >= 0) templates[existing] = tpl; else templates.push(tpl);
+    saveTemplates();
+    showToast(existing >= 0 ? 'Шаблон обновлён' : 'Шаблон сохранён');
+    render();
+  },
+  deleteTemplate: (e) => {
+    const i = +e.currentTarget.dataset.uidx;
+    templates.splice(i, 1); saveTemplates(); render();
+  },
+
   // ——— roster (club regulars) ———
   addFromRoster: (e) => {
     const name = e.currentTarget.dataset.name;
@@ -917,6 +959,24 @@ function setupHtml(d) {
 
   const splitWarn = !d.splitOk ? `<div style="color:var(--pk-danger,#c0662f);font-size:12px;margin-top:4px">⚠ Сумма ${d.splitTotal}% — должно быть 100%</div>` : `<div class="text-muted pk-num" style="font-size:12px;margin-top:4px">Итого: ${d.splitTotal}%</div>`;
 
+  const nBuiltin = BUILTIN_TEMPLATES.length;
+  const tplList = allTemplates().map((t, i) => `
+    <div style="display:flex;align-items:center;gap:6px">
+      <button class="btn btn-secondary" style="flex:1;justify-content:flex-start;font-size:13px" data-action="applyTemplate" data-idx="${i}" title="Применить">${t.builtin ? '★ ' : ''}${esc(t.name)} <span class="text-muted pk-num" style="margin-left:auto;font-size:11px">${t.levels.filter(l => l.type !== 'break').length} ур.</span></button>
+      ${t.builtin ? '' : `<button class="btn btn-icon pk-btn-danger" data-action="deleteTemplate" data-uidx="${i - nBuiltin}" title="Удалить">×</button>`}
+    </div>`).join('');
+  const templatesCard = `
+    <div class="card">
+      <div class="card-kicker">Шаблоны структуры</div>
+      <div style="display:flex;flex-direction:column;gap:6px">${tplList}</div>
+      <div style="display:flex;gap:6px;margin-top:2px">
+        <input class="input" id="tpl-name" placeholder="Название нового шаблона" style="flex:1;font-size:13px">
+        <button class="btn btn-ghost" data-action="saveTemplate" style="white-space:nowrap">Сохранить текущую</button>
+      </div>
+      <div class="text-muted" style="font-size:11px">Нажмите шаблон — структура и взносы подставятся. «★ Домашняя (база)» есть всегда.</div>
+    </div>
+`;
+
   return `
   <main class="pk-main pk-wide">
     <span class="pk-kicker">Настройка</span>
@@ -942,6 +1002,7 @@ function setupHtml(d) {
       </section>
 
       <aside style="display:flex;flex-direction:column;gap:20px">
+        ${templatesCard}
         <div class="card">
           <div class="card-kicker">Взносы и фишки</div>
           <div class="field"><label>Бай-ин, ₽</label><input class="input pk-num" type="text" inputmode="numeric" value="${s.buyIn}" data-key="buyIn"></div>
