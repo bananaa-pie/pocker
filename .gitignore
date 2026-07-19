@@ -1,0 +1,16 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# deps / build (не используются — приложение без сборки)
+node_modules/
+dist/
+
+# vercel
+.vercel/
+
+# архивы
+*.zip

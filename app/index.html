@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0c2b21">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Покерный таймер</title>
+<link rel="manifest" href="manifest.json">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app" class="pk-app">
+
+  <header class="pk-header">
+    <div class="pk-brand">Клубный турнир</div>
+    <div class="pk-header-div"></div>
+    <nav class="pk-steps" id="steps">
+      <span data-step="setup">1 · Структура</span>
+      <span data-step="players">2 · Игроки</span>
+      <span data-step="seats">3 · Жеребьёвка</span>
+      <span data-step="running">4 · Турнир</span>
+      <span data-step="final">5 · Расчёт</span>
+    </nav>
+    <div class="pk-header-right" id="headerRight"></div>
+    <button class="btn btn-ghost" id="clubBtn" type="button" style="font-size:12px">♣ Клуб</button>
+    <button class="btn btn-icon pk-settings-btn" id="settingsBtn" title="Настройки" type="button">⚙</button>
+  </header>
+
+  <div id="screen"></div>
+
+  <div class="pk-settings-panel hidden" id="settingsPanel">
+    <div>
+      <div class="card-kicker" style="margin-bottom:6px">Оформление</div>
+      <div class="pk-theme-opts" id="themeOpts"></div>
+    </div>
+    <div class="hr" style="margin:2px 0"></div>
+    <div class="pk-settings-row">
+      <span>Звук</span>
+      <button class="pk-switch" id="soundSwitch" type="button"></button>
+    </div>
+    <div class="pk-settings-row">
+      <span>Показывать следующий уровень</span>
+      <button class="pk-switch" id="nextSwitch" type="button"></button>
+    </div>
+  </div>
+
+  <div id="modals"></div>
+  <div id="toast"></div>
+</div>
+
+<script src="vendor/supabase.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
