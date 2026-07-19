@@ -1,7 +1,7 @@
 /* Покерный таймер — service worker.
    Precaches the whole (tiny) app so it launches offline once installed —
    important for a timer used at a table where wifi may drop. */
-const CACHE = 'pk-timer-v4';
+const CACHE = 'pk-timer-v6';
 const ASSETS = [
   './',
   './index.html',
@@ -26,11 +26,25 @@ self.addEventListener('activate', (e) => {
   );
 });
 
-// cache-first for our OWN assets only; leave cross-origin (Supabase API) untouched
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
-  if (new URL(req.url).origin !== self.location.origin) return; // don't touch Supabase/CDN
+  const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return; // don't touch Supabase/CDN
+
+  // config.js is user-edited (Supabase keys) — ALWAYS try the network first so
+  // key changes take effect immediately; fall back to cache only when offline.
+  if (url.pathname.endsWith('/config.js')) {
+    e.respondWith(
+      fetch(req).then((res) => {
+        if (res && res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
+        return res;
+      }).catch(() => caches.match(req))
+    );
+    return;
+  }
+
+  // everything else: cache-first (versioned assets), network fallback
   e.respondWith(
     caches.match(req).then((hit) => hit || fetch(req).then((res) => {
       if (res && res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }

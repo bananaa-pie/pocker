@@ -193,11 +193,10 @@ main.pk-main.pk-mid { max-width: 920px; display: flex; flex-direction: column; a
 .pk-seat-card { background: var(--color-surface); border: 1px solid var(--color-divider); border-radius: var(--radius-md); padding: 7px 8px; text-align: center; box-shadow: var(--shadow-sm); }
 .pk-seat-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* running screen — full-width clock hero, then a two-column band below */
+/* running screen — clock hero (blinds | clock | stats), then structure/players band */
 .pk-run { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .pk-hero {
-  position: relative;
-  flex-shrink: 0; display: flex; flex-direction: column; align-items: center; text-align: center;
+  position: relative; flex-shrink: 0;
   padding: 18px 24px 22px; border-bottom: 1px solid var(--color-divider);
   background: radial-gradient(120% 130% at 50% -25%, color-mix(in srgb, var(--color-accent) 11%, transparent), transparent 62%);
 }
@@ -210,13 +209,29 @@ main.pk-main.pk-mid { max-width: 920px; display: flex; flex-direction: column; a
   content: ""; position: absolute; inset: 19px; pointer-events: none;
   border: 1px solid color-mix(in srgb, var(--pk-gold, #d6b56a) 32%, transparent); border-radius: 8px;
 }
-.pk-clock { font-family: var(--font-heading); font-weight: 400; font-size: min(clamp(110px, 21vw, 320px), 34vh); line-height: 1; letter-spacing: -.02em; max-width: 100%; padding: 2px 0 6px; }
+/* hero content: 3 zones on wide screens, stacked on narrow */
+.pk-hero-inner { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 14px; }
+.pk-hero-center { display: flex; flex-direction: column; align-items: center; order: 0; min-width: 0; }
+.pk-flank-blinds, .pk-flank-stats { order: 1; width: 100%; max-width: 460px; }
+.pk-flank-cap { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--color-neutral-600); }
+.pk-blinds-big { font-size: clamp(44px, 8vw, 66px); line-height: 1; margin-top: 4px; }
+.pk-colorup { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--color-accent); border-radius: var(--radius-md); padding: 7px 14px; color: var(--color-accent-800); font-size: 13px; }
+.pk-colorup .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--color-accent); }
+
+@media (min-width: 1000px) {
+  .pk-hero-inner { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); align-items: center; gap: 28px; }
+  .pk-flank-blinds { justify-self: start; text-align: left; }
+  .pk-flank-stats { justify-self: end; }
+  .pk-flank-blinds, .pk-flank-stats { order: 0; }
+  .pk-flank-stats .pk-stat-grid { margin-bottom: 0; }
+}
+
+.pk-clock { font-family: var(--font-heading); font-weight: 400; font-size: min(clamp(108px, 22vw, 360px), 40vh); line-height: 1; letter-spacing: -.02em; max-width: 100%; padding: 2px 0 6px; }
 .pk-ctrl { display: flex; align-items: center; gap: 10px; margin-top: 16px; flex-wrap: wrap; justify-content: center; }
 
 .pk-below-grid { flex: 1; display: grid; grid-template-columns: minmax(0,1fr) 336px; gap: 0; min-height: 0; }
-.pk-below-left { overflow-y: auto; padding: 22px 24px; display: flex; flex-direction: column; gap: 20px; }
+.pk-below-left { overflow-y: auto; padding: 22px 24px; display: flex; flex-direction: column; }
 .pk-run-right { border-left: 1px solid var(--color-divider); overflow-y: auto; padding: 20px 18px; display: flex; flex-direction: column; }
-.pk-blinds-big { font-size: 66px; line-height: 1; margin-top: 4px; }
 
 .pk-level-row { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-bottom: 1px solid var(--color-divider); }
 .pk-level-row.is-current { background: var(--color-surface); box-shadow: inset 3px 0 0 var(--color-accent); }
@@ -234,10 +249,30 @@ main.pk-main.pk-mid { max-width: 920px; display: flex; flex-direction: column; a
 }
 @media (max-width: 560px) {
   .pk-hero { padding: 12px 12px 16px; }
-  .pk-blinds-big { font-size: 52px; }
   .pk-pad { padding-left: 16px; padding-right: 16px; }
   .pk-ctrl { gap: 7px; }
   .pk-ctrl .btn { height: 42px !important; }
+}
+
+/* ——— phone laid on its side: full-screen "watch" timer ——— */
+@media (orientation: landscape) and (max-height: 520px) {
+  .pk-header { display: none !important; }
+  .pk-run { height: 100vh; height: 100dvh; }
+  .pk-hero { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 10px 20px; border-bottom: none; }
+  .pk-hero::before { inset: 8px; }
+  .pk-hero::after { inset: 14px; }
+  .pk-hero-inner { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); align-items: center; gap: 16px; width: 100%; }
+  .pk-flank-blinds { justify-self: start; text-align: left; order: 0; min-width: 0; }
+  .pk-flank-stats { justify-self: end; order: 0; min-width: 0; max-width: 100%; }
+  .pk-flank-stats .pk-stat-grid { margin-bottom: 0; }
+  .pk-flank-stats .pk-stat-cell { padding: 6px 9px; }
+  .pk-flank-stats .pk-flank-cap { font-size: 9px; }
+  .pk-flank-stats .pk-num { font-size: clamp(15px, 4vh, 20px) !important; }
+  .pk-clock { font-size: min(42vh, 20vw); padding: 0; }
+  .pk-blinds-big { font-size: clamp(28px, 5.5vh, 50px); }
+  .pk-ctrl { margin-top: 10px; gap: 8px; }
+  .pk-ctrl .btn { height: 40px !important; }
+  .pk-below-grid { display: none !important; } /* hide structure/players in watch mode */
 }
 
 /* settings popover */
@@ -258,6 +293,10 @@ details.pk-details summary::-webkit-details-marker { display: none; }
 /* final settlement screen */
 .pk-final-grid { display: grid; grid-template-columns: 1fr; gap: 32px; align-items: start; }
 @media (min-width: 780px) { .pk-final-grid { grid-template-columns: 1fr 1fr; } }
+
+/* clickable archive row */
+.pk-arc-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 12px; border: 1px solid var(--color-divider); border-radius: var(--radius-md); background: transparent; color: var(--color-text); cursor: pointer; font: inherit; text-align: left; }
+.pk-arc-row:hover { border-color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 8%, transparent); }
 
 /* who-pays-whom settlement list */
 .pk-tx { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--color-divider); border-radius: var(--radius-md); font-size: 14px; }

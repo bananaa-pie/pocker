@@ -135,11 +135,14 @@ function initCloud() {
       // когда пользователь возвращается на приложение (не нужен ручной ввод кода).
       auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'implicit' },
     });
-    cloud.status = 'signedout';
-    sb.auth.getSession().then(({ data }) => { if (data && data.session) onSignedIn(data.session); });
+    cloud.status = 'connecting'; // don't flash the email form before we know if a session is stored
+    sb.auth.getSession().then(({ data }) => {
+      if (data && data.session) onSignedIn(data.session);
+      else { cloud.status = 'signedout'; render(); }
+    }).catch(() => { cloud.status = 'signedout'; render(); });
     sb.auth.onAuthStateChange((_e, session) => {
       if (session && (!cloud.session || cloud.session.user.id !== session.user.id)) onSignedIn(session);
-      else if (!session) { cloud.session = null; cloud.club = null; cloud.status = 'signedout'; render(); }
+      else if (!session && cloud.session) { cloud.session = null; cloud.club = null; cloud.status = 'signedout'; render(); }
     });
   } catch (e) { cloud.status = 'off'; }
 }
@@ -539,10 +542,18 @@ const actions = {
 
   // ——— archive ———
   saveToArchive: () => {
-    const d = derive();
+    const d = derive(), s = state;
     const rec = {
       id: rndId(), date: new Date().toISOString(), bank: d.bank, entries: d.entries,
-      players: d.standings.map(st => ({ name: st.name, paid: st.paid, payout: st.payout, net: st.net, place: st.place })),
+      totalRebuys: d.totalRebuys, totalAddons: d.totalAddons,
+      buyIn: s.buyIn, rebuyAmount: s.rebuyAmount, addonAmount: s.addonAmount, startingStack: s.startingStack,
+      split: [s.split1, s.split2, s.split3],
+      prizes: d.prizeRows.filter(p => p.sel).map(p => ({ place: p.place, name: p.name, pct: p.pct, amount: p.amount })),
+      players: s.players.map((p, i) => {
+        const st = d.standings[i];
+        return { name: st.name, rebuys: p.rebuys || 0, addons: p.addons || 0, paid: st.paid, payout: st.payout, net: st.net, place: st.place };
+      }),
+      tx: d.tx,
     };
     archive.unshift(rec); saveArchive();
     d.standings.forEach(st => rosterAdd(st.name)); // remember these regulars
@@ -551,7 +562,17 @@ const actions = {
     render();
   },
 
-  openClub: () => { clubReturn = state.screen; setState({ screen: 'club' }); },
+  openClub: () => { clubReturn = state.screen; viewTourneyId = null; setState({ screen: 'club' }); },
+  openTourney: (e) => { viewTourneyId = e.currentTarget.dataset.id; render(); },
+  closeTourney: () => { viewTourneyId = null; render(); },
+  copyTourney: (e) => {
+    const rec = archive.find(t => t.id === e.currentTarget.dataset.id);
+    if (!rec) return;
+    const text = archiveText(rec);
+    const done = () => showToast('Итоги скопированы');
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
+    else fallbackCopy(text, done);
+  },
   closeClub: () => setState({ screen: clubReturn || 'setup' }),
   clearArchive: () => setState({ confirm: { title: 'Очистить архив?', body: 'Все сохранённые турниры и таблица сезона будут удалены' + (cloudOn() ? ' (и в облаке тоже)' : '') + '. Ростер игроков останется. Действие необратимо.', label: 'Очистить', kind: 'clearArchive' } }),
 
@@ -573,6 +594,7 @@ const actions = {
   cloudSignOut: () => { if (sb) sb.auth.signOut(); cloud.session = null; cloud.club = null; cloud.status = 'signedout'; render(); },
   cloudSyncNow: () => { if (cloud.session) onSignedIn(cloud.session); },
   cloudJoin: () => {
+    if (!cloud.session) { showToast('Сначала войдите по email'); return; }
     const el = document.getElementById('cloud-clubcode'); const code = (el && el.value || '').trim();
     if (!code) { showToast('Впишите код клуба'); return; }
     cloud.status = 'syncing'; render();
@@ -586,6 +608,27 @@ const actions = {
 };
 
 let clubReturn = 'setup';
+let viewTourneyId = null; // archive detail currently open (transient)
+
+function archiveText(rec) {
+  const lines = [];
+  const date = (() => { try { return new Date(rec.date).toLocaleDateString('ru-RU'); } catch (e) { return ''; } })();
+  lines.push('♠ Покерный турнир · ' + date);
+  lines.push('Банк ' + money(rec.bank) + ' · входов ' + rec.entries + (rec.totalRebuys != null ? ' (ребаев ' + rec.totalRebuys + (rec.totalAddons ? ', аддонов ' + rec.totalAddons : '') + ')' : ''));
+  (rec.prizes || []).forEach(pr => lines.push(pr.place + ' место — ' + pr.name + ': ' + money(pr.amount)));
+  lines.push('');
+  lines.push('Баланс:');
+  (rec.players || []).slice().sort((a, b) => b.net - a.net).forEach(p => {
+    const sign = p.net > 0 ? '+' : p.net < 0 ? '−' : '';
+    lines.push('• ' + p.name + ': ' + sign + money(Math.abs(p.net)));
+  });
+  if (rec.tx && rec.tx.length) {
+    lines.push('');
+    lines.push('Кто кому платит:');
+    rec.tx.forEach(t => lines.push('• ' + t.from + ' → ' + t.to + ': ' + money(t.amount)));
+  }
+  return lines.join('\n');
+}
 
 const confirmKinds = {
   newTournament: () => {
@@ -1020,18 +1063,36 @@ function runningHtml(d) {
   const showNextRow = s.showNextBlinds && !!nxtBlind;
   const levelLabel = d.curIsBreak ? 'Перерыв' : ('Уровень ' + d.blindNo + ' / ' + d.blindTotal);
 
-  return `
-  <main class="pk-run">
+  // ——— hero pieces (clock centred, blinds on the left flank, stats on the right) ———
+  const blindsBlock = `
+    <div class="pk-flank-blinds">
+      <div class="pk-flank-cap">${d.curIsBreak ? 'Статус' : 'Малый / Большой'}</div>
+      <div class="pk-num pk-blinds-big" style="font-family:var(--font-heading)">${d.curIsBreak ? '⏸ Перерыв' : fmt(cur.sb) + ' / ' + fmt(cur.bb)}</div>
+      ${(!d.curIsBreak && cur.ante) ? `<div style="margin-top:10px"><div class="pk-flank-cap">Анте</div><div class="pk-num" style="font-family:var(--font-heading);font-size:clamp(26px,3.4vw,40px);line-height:1;margin-top:2px">${fmt(cur.ante)}</div></div>` : ''}
+      ${showNextRow ? `<div style="margin-top:10px"><div class="pk-flank-cap">${d.curIsBreak ? 'После перерыва' : 'Далее'}</div><div class="pk-num text-muted" style="font-size:clamp(16px,2vw,22px);line-height:1;margin-top:4px">${fmt(nxtBlind.sb)} / ${fmt(nxtBlind.bb)}${nxtBlind.ante ? ' · анте ' + fmt(nxtBlind.ante) : ''}</div></div>` : ''}
+      ${d.bubble ? `<div class="pk-bubble" style="margin-top:12px"><span class="dot"></span><span>Бабл — один вылет до призов</span></div>` : ''}
+      ${cur.colorUp ? `<div class="pk-colorup" style="margin-top:12px"><span class="dot"></span><span>Замена фишек (color up)</span></div>` : ''}
+    </div>`;
 
-    <section class="pk-hero">
-      <div style="display:flex;align-items:center;gap:14px">
+  const statCell = (label, value) => `<div class="pk-stat-cell"><div class="pk-flank-cap">${label}</div><div class="pk-num" style="font-family:var(--font-heading);font-size:clamp(20px,2.4vw,26px)">${value}</div></div>`;
+  const statsBlock = `
+    <div class="pk-flank-stats">
+      <div class="pk-stat-grid">
+        ${statCell('Банк', money(d.bank))}
+        ${statCell('Осталось', d.remaining + ' / ' + s.players.length)}
+        ${statCell('Входов', d.entries)}
+        ${statCell('Ср. стек', fmt(d.avgStack))}
+      </div>
+    </div>`;
+
+  const centerBlock = `
+    <div class="pk-hero-center">
+      <div style="display:flex;align-items:center;justify-content:center;gap:14px">
         <span style="font-size:14px;letter-spacing:.18em;text-transform:uppercase;color:var(--color-neutral-600)" class="pk-num">${levelLabel}</span>
         <span class="tag ${rebuyOpen ? 'tag-accent' : 'tag-neutral'}" style="font-size:10px">${rebuyOpen ? 'Ребаи открыты' : 'Ребаи закрыты'}</span>
       </div>
-
       <div class="pk-num pk-clock" id="pk-clock">${d.clockInit}</div>
       <div class="pk-progress"><i id="pk-progress-fill"></i></div>
-
       <div class="pk-ctrl">
         <button class="btn btn-secondary" data-action="addMinusMinute" title="Убавить минуту" style="height:46px;font-size:15px;padding:0 15px">−1 мин</button>
         <button class="btn btn-secondary btn-icon" title="Предыдущий уровень" data-action="prev" style="font-size:18px">‹</button>
@@ -1040,59 +1101,32 @@ function runningHtml(d) {
         <button class="btn btn-secondary" data-action="addPlusMinute" title="Добавить минуту" style="height:46px;font-size:15px;padding:0 15px">+1 мин</button>
         <button class="btn btn-icon" title="Звук" data-action="toggleSoundBtn" style="color:var(--color-neutral-700);margin-left:4px">${s.muted ? '♪̶' : '♪'}</button>
       </div>
+    </div>`;
+
+  return `
+  <main class="pk-run">
+
+    <section class="pk-hero">
+      <div class="pk-hero-inner">
+        ${blindsBlock}
+        ${centerBlock}
+        ${statsBlock}
+      </div>
     </section>
 
     <div class="pk-below-grid">
-
       <div class="pk-scroll pk-below-left pk-pad">
-        <div style="display:flex;align-items:flex-end;gap:44px;flex-wrap:wrap">
-          <div>
-            <div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--color-neutral-600)">${d.curIsBreak ? 'Статус' : 'Малый / Большой'}</div>
-            <div class="pk-num pk-blinds-big" style="font-family:var(--font-heading)">${d.curIsBreak ? '⏸ Перерыв' : fmt(cur.sb) + ' / ' + fmt(cur.bb)}</div>
-          </div>
-          ${(!d.curIsBreak && cur.ante) ? `
-            <div style="padding-bottom:8px">
-              <div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--color-neutral-600)">Анте</div>
-              <div class="pk-num" style="font-family:var(--font-heading);font-size:38px;line-height:1;margin-top:4px">${fmt(cur.ante)}</div>
-            </div>` : ''}
-          ${showNextRow ? `
-            <div style="padding-bottom:10px">
-              <div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--color-neutral-600)">${d.curIsBreak ? 'После перерыва' : 'Далее'}</div>
-              <div class="pk-num text-muted" style="font-size:20px;line-height:1;margin-top:6px">${fmt(nxtBlind.sb)} / ${fmt(nxtBlind.bb)}${nxtBlind.ante ? ' · анте ' + fmt(nxtBlind.ante) : ''}</div>
-            </div>` : ''}
-        </div>
-
-        ${d.bubble ? `
-          <div class="pk-bubble"><span class="dot"></span><span>Бабл — остался один вылет до призовой зоны</span></div>` : ''}
-
-        ${cur.colorUp ? `
-          <div style="display:inline-flex;align-self:flex-start;align-items:center;gap:8px;border:1px solid var(--color-accent);border-radius:var(--radius-md);padding:8px 16px;color:var(--color-accent-800)">
-            <span style="width:10px;height:10px;border-radius:50%;background:var(--color-accent)"></span>
-            <span style="font-size:13px">На этом уровне — замена (color up) младших фишек</span>
-          </div>` : ''}
-
-        <div>
-          <div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:8px">Структура</div>
-          ${structureRows}
-        </div>
+        <div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:8px">Структура</div>
+        ${structureRows}
       </div>
 
       <aside class="pk-scroll pk-run-right">
-        <div class="pk-stat-grid">
-          <div class="pk-stat-cell"><div style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--color-neutral-600)">Банк</div><div class="pk-num" style="font-family:var(--font-heading);font-size:24px">${money(d.bank)}</div></div>
-          <div class="pk-stat-cell"><div style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--color-neutral-600)">Осталось</div><div class="pk-num" style="font-family:var(--font-heading);font-size:24px">${d.remaining} / ${s.players.length}</div></div>
-          <div class="pk-stat-cell"><div style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--color-neutral-600)">Входов</div><div class="pk-num" style="font-family:var(--font-heading);font-size:24px">${d.entries}</div></div>
-          <div class="pk-stat-cell"><div style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--color-neutral-600)">Ср. стек, фишек</div><div class="pk-num" style="font-family:var(--font-heading);font-size:24px">${fmt(d.avgStack)}</div></div>
-        </div>
-
-        <div style="display:flex;align-items:center;justify-content:space-between;margin:6px 0 6px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin:0 0 8px">
           <span style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--color-neutral-600)">Игроки</span>
           ${rebuyOpen ? '<button class="btn btn-ghost" data-action="lateAddPlayer" style="font-size:12px" title="Поздняя регистрация">+ Игрок</button>' : ''}
         </div>
         <div style="display:flex;flex-direction:column;gap:6px;flex:1">${playersRows}</div>
-
         ${!rebuyOpen ? '<div class="text-muted" style="font-size:12px;margin-top:8px;font-style:italic">Регистрация и ребаи закрыты</div>' : ''}
-
         <button class="btn btn-primary btn-block" style="margin-top:14px" data-action="endTournament">Завершить турнир</button>
       </aside>
     </div>
@@ -1180,17 +1214,15 @@ function cloudCardHtml() {
   if (cloud.status === 'off') {
     return wrap(`<div class="text-muted" style="font-size:13px">Выключена — приложение работает локально. Чтобы включить синхронизацию между устройствами, заполните <b>config.js</b> данными проекта Supabase (см. SUPABASE_SETUP.md).</div>`);
   }
+  if (cloud.status === 'connecting') {
+    return wrap(`<div class="text-muted" style="font-size:13px">Подключение…</div>`);
+  }
   if (cloud.status === 'signedout') {
     return wrap(`
-      <div class="text-muted" style="font-size:13px;margin-bottom:6px">Войдите по email — пришлём ссылку для входа. Ростер и архив будут синхронизироваться между устройствами.</div>
+      <div class="text-muted" style="font-size:13px;margin-bottom:8px">Войдите по email — пришлём ссылку для входа. <b>На каждом устройстве нужно войти один раз.</b> Укажите <b>тот же email</b>, что и на первом устройстве — данные подтянутся сами (код клуба вводить не нужно).</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
         <input class="input" id="cloud-email" type="email" inputmode="email" placeholder="you@example.com" style="flex:1;min-width:180px" autocomplete="email">
         <button class="btn btn-primary" data-action="cloudSendCode">Прислать ссылку</button>
-      </div>
-      <div class="hr" style="margin:12px 0"></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <input class="input" id="cloud-clubcode" placeholder="Код клуба (если делитесь)" style="flex:1;min-width:180px">
-        <button class="btn btn-secondary" data-action="cloudJoin">Подключить клуб</button>
       </div>`);
   }
   if (cloud.status === 'codesent') {
@@ -1216,8 +1248,75 @@ function cloudCardHtml() {
         <button class="btn btn-ghost" data-action="cloudSignOut">Выйти</button>
       </div>
     </div>
-    <div class="text-muted" style="font-size:12px;margin-top:6px">Откройте приложение на другом устройстве и войдите тем же email — увидите те же данные. Код клуба нужен, только если доступ открывает другой человек.</div>
-    ${err}`);
+    <div class="text-muted" style="font-size:12px;margin-top:6px">Откройте приложение на другом устройстве и войдите <b>тем же email</b> — увидите те же данные. Код клуба нужен, только если к вашему клубу подключается <b>другой человек</b>.</div>
+    ${err}
+    <details class="pk-details" style="margin-top:10px">
+      <summary class="text-muted" style="font-size:12px">Подключиться к чужому клубу по коду ▾</summary>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
+        <input class="input" id="cloud-clubcode" placeholder="Код клуба" style="flex:1;min-width:160px">
+        <button class="btn btn-secondary" data-action="cloudJoin">Подключить</button>
+      </div>
+    </details>`);
+}
+
+function archiveDetailHtml(rec, dateStr) {
+  const players = (rec.players || []).slice().sort((a, b) => (b.net || 0) - (a.net || 0));
+  const hasExtra = players.some(p => p.rebuys != null); // records saved before this update lack rebuys/tx
+
+  const prizeLine = (rec.prizes && rec.prizes.length)
+    ? rec.prizes.map(pr => `${pr.place}. <b>${esc(pr.name)}</b> — ${money(pr.amount)}${pr.pct ? ' <span class="text-muted">(' + pr.pct + ')</span>' : ''}`).join(' · ')
+    : '<span class="text-muted">призовые не назначены</span>';
+
+  const rows = players.map(p => {
+    const entriesStr = (p.rebuys != null)
+      ? ((1 + (p.rebuys || 0)) + '×' + ((p.addons || 0) > 0 ? ' +' + p.addons + 'А' : ''))
+      : '—';
+    const net = p.net || 0;
+    return `
+      <tr>
+        <td>${esc(p.name)}${p.place ? ` <span class="text-muted pk-num" style="font-size:11px">· ${p.place} место</span>` : ''}</td>
+        <td class="pk-num text-muted" style="text-align:center">${entriesStr}</td>
+        <td class="pk-num text-muted" style="text-align:right">${money(p.paid || 0)}</td>
+        <td class="pk-num" style="text-align:right">${p.payout ? money(p.payout) : '—'}</td>
+        <td class="pk-num ${net > 0 ? 'pk-net-up' : (net < 0 ? 'pk-net-down' : '')}" style="text-align:right">${(net > 0 ? '+' : net < 0 ? '−' : '') + money(Math.abs(net))}</td>
+      </tr>`;
+  }).join('');
+
+  const txRows = (rec.tx && rec.tx.length)
+    ? rec.tx.map(t => `
+        <div class="pk-tx">
+          <span class="pk-tx-from">${esc(t.from)}</span><span class="pk-tx-arrow">→</span><span>${esc(t.to)}</span>
+          <span class="pk-tx-amt pk-num">${money(t.amount)}</span>
+        </div>`).join('')
+    : (hasExtra ? '<div class="text-muted" style="font-size:13px">Все в расчёте — переводов нет.</div>'
+                : '<div class="text-muted" style="font-size:13px">Этот турнир сохранён до обновления — детальные переводы не записаны.</div>');
+
+  const rebuysNote = rec.totalRebuys != null
+    ? ` · ребаев ${rec.totalRebuys}${rec.totalAddons ? ', аддонов ' + rec.totalAddons : ''}`
+    : '';
+
+  return `
+  <main class="pk-main" style="max-width:760px">
+    <span class="pk-kicker">Клуб · турнир</span>
+    <h1 class="pk-h1">${dateStr(rec.date)}</h1>
+    <p class="text-muted" style="margin:0 0 6px">Банк ${money(rec.bank)} · входов ${rec.entries}${rebuysNote} · игроков ${players.length}</p>
+    <p style="margin:0 0 22px;font-size:14px">${prizeLine}</p>
+
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+      <h4 style="margin:0;font-size:15px;letter-spacing:.06em;text-transform:uppercase;color:var(--color-neutral-700)">Баланс игроков</h4>
+      <button class="btn btn-secondary" data-action="copyTourney" data-id="${esc(rec.id || '')}">⧉ Скопировать</button>
+    </div>
+    <div style="overflow-x:auto"><table class="table">
+      <thead><tr><th>Игрок</th><th style="text-align:center">Входы</th><th style="text-align:right">Внёс</th><th style="text-align:right">Выигрыш</th><th style="text-align:right">Итог</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5" class="text-muted">Нет данных</td></tr>'}</tbody>
+    </table></div>
+
+    <h4 style="margin:26px 0 10px;font-size:15px;letter-spacing:.06em;text-transform:uppercase;color:var(--color-neutral-700)">Кто кому платит</h4>
+    <div style="display:flex;flex-direction:column;gap:8px;max-width:520px">${txRows}</div>
+
+    <hr class="hr">
+    <button class="btn btn-secondary" data-action="closeTourney">← К списку</button>
+  </main>`;
 }
 
 function clubHtml() {
@@ -1242,16 +1341,22 @@ function clubHtml() {
     </tr>`).join('') : '<tr><td colspan="5" class="text-muted" style="font-size:13px">Пока нет сохранённых турниров. Сыграйте и нажмите «Сохранить в архив» на экране расчёта.</td></tr>';
 
   const dateStr = iso => { try { return new Date(iso).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit' }); } catch (e) { return ''; } };
+
+  // ——— archive detail (a single saved tournament) ———
+  const openRec = viewTourneyId ? archive.find(t => t.id === viewTourneyId) : null;
+  if (openRec) return archiveDetailHtml(openRec, dateStr);
+
   const archiveRows = archive.map(t => {
     const winner = (t.players || []).find(p => p.place === 1);
     return `
-      <div style="display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--color-divider);border-radius:var(--radius-md)">
+      <button class="pk-arc-row" data-action="openTourney" data-id="${esc(t.id || '')}">
         <div class="pk-num" style="width:64px;color:var(--color-neutral-700)">${dateStr(t.date)}</div>
-        <div style="flex:1;min-width:0">
+        <div style="flex:1;min-width:0;text-align:left">
           <div style="font-size:14px">Победитель: <b style="color:var(--color-accent)">${winner ? esc(winner.name) : '—'}</b></div>
           <div class="text-muted pk-num" style="font-size:11px">банк ${money(t.bank)} · входов ${t.entries} · игроков ${(t.players || []).length}</div>
         </div>
-      </div>`;
+        <span style="color:var(--color-neutral-600);font-size:18px">›</span>
+      </button>`;
   }).join('');
 
   return `
