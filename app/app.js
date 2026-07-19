@@ -327,24 +327,51 @@ function ensureAudio() {
     if (ac.state === 'suspended') ac.resume();
   } catch (e) { /* no web audio */ }
 }
-// gentle two-note chime (soft, single) — not the old triple gong
+// low-level: schedule one note. at = offset (s) from now, dur = length (s), vol = peak gain.
+function tone(at, freq, dur, vol, type) {
+  const o = ac.createOscillator(), g = ac.createGain();
+  o.type = type || 'sine'; o.frequency.value = freq;
+  const t = ac.currentTime + at;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g).connect(ac.destination);
+  o.start(t); o.stop(t + dur + 0.05);
+}
+const soundOk = (force) => force || (!state.muted && state.soundOn);
+// gentle two-note chime (soft, single) — used when the timer PAUSES for a color-up / final
 function playChime(force) {
-  if (!force && (state.muted || !state.soundOn)) return;
-  ensureAudio();
-  if (!ac) return;
-  const t0 = ac.currentTime;
-  [{ f: 587.33, at: 0 }, { f: 880, at: 0.16 }].forEach(n => {
-    const o = ac.createOscillator(), g = ac.createGain();
-    o.type = 'sine'; o.frequency.value = n.f;
-    const t = t0 + n.at;
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.16, t + 0.03);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.85);
-    o.connect(g).connect(ac.destination);
-    o.start(t); o.stop(t + 0.9);
-  });
+  if (!soundOk(force)) return; ensureAudio(); if (!ac) return;
+  tone(0, 587.33, 0.85, 0.16); tone(0.16, 880, 0.85, 0.16);
+}
+// 60 s warning — deliberately unobtrusive: one soft low ding
+function playWarn60(force) {
+  if (!soundOk(force)) return; ensureAudio(); if (!ac) return;
+  tone(0, 493.88, 0.6, 0.1); tone(0.13, 659.25, 0.6, 0.1);
+}
+// last-10-seconds countdown tick — one per second, escalating in the final 3 s
+function playTick(sec, force) {
+  if (!soundOk(force)) return; ensureAudio(); if (!ac) return;
+  const urgent = sec <= 3;
+  tone(0, urgent ? 880 : 660, urgent ? 0.2 : 0.11, urgent ? 0.24 : 0.13, urgent ? 'triangle' : 'sine');
+}
+// the blind change itself — prominent, a short rising three-note fanfare
+function playChange(force) {
+  if (!soundOk(force)) return; ensureAudio(); if (!ac) return;
+  [{ f: 587.33, at: 0 }, { f: 783.99, at: 0.18 }, { f: 1174.66, at: 0.36 }].forEach(n => tone(n.at, n.f, 0.7, 0.24));
+  tone(0.6, 1174.66, 0.9, 0.2);
 }
 function stopChimeLoop() { clearInterval(chimeTimer); } // kept no-op-safe (loop removed)
+
+// once-per-level cue tracker: 60 s warning + per-second ticks in the last 10 s
+let cue = { level: -1, warned: false, lastTick: 0 };
+function runCues(ms) {
+  if (!state.timer.running) return;
+  if (cue.level !== state.currentLevel) { cue.level = state.currentLevel; cue.warned = false; cue.lastTick = 0; }
+  const secLeft = Math.ceil(ms / 1000);
+  if (!cue.warned && secLeft === 60) { cue.warned = true; playWarn60(); }
+  if (secLeft <= 10 && secLeft >= 1 && cue.lastTick !== secLeft) { cue.lastTick = secLeft; playTick(secLeft); }
+}
 
 // ——— clock render loop (rAF; touches only the clock node, no full re-render) ———
 function clockLoop() {
@@ -360,30 +387,48 @@ function clockLoop() {
         const durMs = curLevelSeconds() * 1000 || 1;
         fill.style.width = Math.max(0, Math.min(100, 100 * (1 - ms / durMs))) + '%';
       }
+      runCues(ms);
       if (state.timer.running && ms <= 0 && !state.levelEnd) onLevelEnd();
     }
   }
   requestAnimationFrame(clockLoop);
 }
 function blindNumber(idx) { let n = 0; for (let k = 0; k <= idx && k < state.levels.length; k++) if ((state.levels[k] || {}).type !== 'break') n++; return n; }
+// big centred overlay so a blind change is readable from across the room; taps to dismiss, auto-hides
+let levelAlertTimer = null;
+function showLevelAlert(html, ms) {
+  const el = document.getElementById('levelAlert');
+  if (!el) return;
+  el.innerHTML = `<div class="pk-la-card">${html}<div class="pk-la-hint">нажмите, чтобы закрыть</div></div>`;
+  el.classList.add('show');
+  clearTimeout(levelAlertTimer);
+  const hide = () => { el.classList.remove('show'); clearTimeout(levelAlertTimer); };
+  levelAlertTimer = setTimeout(hide, ms || 60000);
+  el.onclick = hide;
+}
 function announceLevel() {
   const l = state.levels[state.currentLevel] || {};
-  if (l.type === 'break') showToast('Начался перерыв · ' + l.dur + ' мин', null, 60000);
-  else showToast('Уровень ' + blindNumber(state.currentLevel) + ' · блайнды ' + fmt(l.sb) + ' / ' + fmt(l.bb) + (l.ante ? ' · анте ' + fmt(l.ante) : ''), null, 60000);
+  if (l.type === 'break') {
+    showLevelAlert(`<div class="pk-la-kicker">Перерыв</div><div class="pk-la-big">⏸ ${l.dur} мин</div>`, 60000);
+  } else {
+    const ante = l.ante ? `<div class="pk-la-ante">анте ${fmt(l.ante)}</div>` : '';
+    showLevelAlert(`<div class="pk-la-kicker">Уровень ${blindNumber(state.currentLevel)}</div><div class="pk-la-big">${fmt(l.sb)} / ${fmt(l.bb)}</div>${ante}`, 60000);
+  }
 }
 function onLevelEnd() {
   const ended = state.levels[state.currentLevel] || {};
   const lastLevel = state.currentLevel >= state.levels.length - 1;
-  playChime();
-  if (navigator.vibrate) { try { navigator.vibrate([120, 60, 120]); } catch (e) { /* ignore */ } }
+  if (navigator.vibrate) { try { navigator.vibrate([160, 80, 160, 80, 160]); } catch (e) { /* ignore */ } }
   if (ended.colorUp || lastLevel) {
     // требуется действие (замена фишек / конец турнира) → пауза до подтверждения
+    playChime();
     state.timer.running = false; state.timer.remainingMs = 0; state.timer.endsAt = null;
     keepAwake(false);
     setState({ levelEnd: true });
   } else {
-    // обычный уровень → таймер не останавливается, просто переходим дальше + уведомление на минуту
+    // обычный уровень → таймер не останавливается: переходим дальше, звоним и показываем большое уведомление
     advance(1, true);
+    playChange();
     announceLevel();
   }
 }
@@ -902,7 +947,7 @@ function render() {
   }
 
   const themeDef = THEMES.find(t => t.key === state.theme) || THEMES[0];
-  appEl.className = 'pk-app ' + themeDef.cls;
+  appEl.className = 'pk-app pk-screen-' + state.screen + ' ' + themeDef.cls;
   document.documentElement.style.background = themeDef.bg;
   document.body.style.background = themeDef.bg;
   if (themeMeta) themeMeta.setAttribute('content', themeDef.bg);
@@ -1205,8 +1250,6 @@ function runningHtml(d) {
       ${(!d.curIsBreak && cur.ante) ? tile('Анте', fmt(cur.ante)) : ''}
       ${showNextRow ? tile(d.curIsBreak ? 'После перерыва' : 'Далее', fmt(nxtBlind.sb) + ' / ' + fmt(nxtBlind.bb)) : ''}
       ${tile('Банк', money(d.bank))}
-      ${tile('Осталось', d.remaining + ' / ' + s.players.length)}
-      ${tile('Ср. стек', fmt(d.avgStack))}
     </div>`;
 
   const bannerInner = `
@@ -1217,6 +1260,7 @@ function runningHtml(d) {
   return `
   <main class="pk-run">
 
+   <div class="pk-run-top">
     <section class="pk-hero">
       <div class="pk-hero-center">
         <div style="display:flex;align-items:center;justify-content:center;gap:14px">
@@ -1238,6 +1282,7 @@ function runningHtml(d) {
 
     ${infoTiles}
     ${banners}
+   </div>
 
     <div class="pk-below-grid">
       <aside class="pk-scroll pk-run-players pk-pad">
@@ -1658,6 +1703,13 @@ soundSwitch.addEventListener('click', () => setState(s => ({ soundOn: !s.soundOn
 nextSwitch.addEventListener('click', () => setState(s => ({ showNextBlinds: !s.showNextBlinds })));
 const guideBtn = document.getElementById('guideBtn');
 if (guideBtn) guideBtn.addEventListener('click', () => { settingsPanel.classList.add('hidden'); openGuide(); });
+
+// ——— collapsible top bar (running screen) — a tap tab pulls it down; desktop reveals on hover ———
+const chromeToggle = document.getElementById('chromeToggle');
+if (chromeToggle) chromeToggle.addEventListener('click', () => {
+  const open = document.body.classList.toggle('pk-chrome-open');
+  chromeToggle.textContent = open ? '⌃' : '⌄';
+});
 
 // ——— event delegation ———
 screenEl.addEventListener('click', (e) => {

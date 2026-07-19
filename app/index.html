@@ -14,6 +14,9 @@
 <body>
 <div id="app" class="pk-app">
 
+  <div class="pk-chrome-peek" id="chromePeek" aria-hidden="true"></div>
+  <button class="pk-chrome-toggle" id="chromeToggle" type="button" title="Показать / скрыть панель">⌄</button>
+
   <header class="pk-header">
     <div class="pk-brand">Клубный турнир</div>
     <div class="pk-header-div"></div>
@@ -51,6 +54,7 @@
 
   <div id="modals"></div>
   <div id="toast"></div>
+  <div id="levelAlert"></div>
 </div>
 
 <script src="vendor/supabase.js"></script>
