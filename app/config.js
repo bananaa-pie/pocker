@@ -10,6 +10,6 @@
  *
  * Пока значения — плейсхолдеры, синхронизация просто выключена. */
 window.PK_SUPABASE = {
-  url: 'ВАШ_SUPABASE_URL',       // напр. https://abcdxyz.supabase.co
-  anonKey: 'ВАШ_SUPABASE_ANON_KEY',
+  url: 'https://gizqvonoqhgkygxkqfyi.supabase.co',       // напр. https://abcdxyz.supabase.co
+  anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdpenF2b25vcWhna3lneGtxZnlpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQwMjU3MTUsImV4cCI6MjA5OTYwMTcxNX0.ATigbyXgxcTJS-BeoKlUYf3DdMr2uZ_cYWXJQN7OZZw',
 };
