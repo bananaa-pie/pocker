@@ -25,22 +25,29 @@ function defaultState() {
     buyIn: 200,
     rebuyAmount: 200,
     startingStack: 2000,
-    rebuyLevels: 4,
+    rebuyLevels: 5,
     addonAmount: 0,      // 0 = add-on disabled
-    addonStack: 3000,
+    addonStack: 0,
     split1: 50, split2: 30, split3: 20,
 
     levels: [
-      { sb: 25, bb: 50, ante: 0, dur: 15, colorUp: false },
-      { sb: 50, bb: 100, ante: 0, dur: 15, colorUp: false },
-      { sb: 75, bb: 150, ante: 0, dur: 15, colorUp: false },
-      { sb: 100, bb: 200, ante: 0, dur: 15, colorUp: false },
-      { sb: 150, bb: 300, ante: 25, dur: 15, colorUp: true },
-      { sb: 200, bb: 400, ante: 50, dur: 15, colorUp: false },
-      { sb: 300, bb: 600, ante: 75, dur: 15, colorUp: false },
-      { sb: 500, bb: 1000, ante: 100, dur: 15, colorUp: true },
-      { sb: 700, bb: 1400, ante: 200, dur: 15, colorUp: false },
-      { sb: 1000, bb: 2000, ante: 300, dur: 15, colorUp: false },
+      { sb: 10,   bb: 20,   ante: 0,    dur: 12, colorUp: false },              // 1
+      { sb: 20,   bb: 40,   ante: 0,    dur: 12, colorUp: false },              // 2
+      { sb: 30,   bb: 60,   ante: 0,    dur: 12, colorUp: false },              // 3
+      { sb: 50,   bb: 100,  ante: 0,    dur: 12, colorUp: false },              // 4
+      { sb: 70,   bb: 140,  ante: 0,    dur: 12, colorUp: false },              // 5 — последний ребай
+      { sb: 100,  bb: 200,  ante: 0,    dur: 12, colorUp: true  },              // 6 — убрать 10 и 20
+      { type: 'break', sb: 0, bb: 0, ante: 0, dur: 10, colorUp: false },        // перерыв 10 мин
+      { sb: 150,  bb: 300,  ante: 300,  dur: 12, colorUp: false },              // 7 — включается BB-анте
+      { sb: 200,  bb: 400,  ante: 400,  dur: 12, colorUp: true  },              // 8 — убрать 50
+      { sb: 300,  bb: 600,  ante: 600,  dur: 12, colorUp: false },              // 9
+      { sb: 400,  bb: 800,  ante: 800,  dur: 12, colorUp: false },              // 10
+      { sb: 600,  bb: 1200, ante: 1200, dur: 12, colorUp: false },              // 11
+      { sb: 800,  bb: 1600, ante: 1600, dur: 12, colorUp: false },              // 12
+      { sb: 1000, bb: 2000, ante: 2000, dur: 12, colorUp: false },              // 13
+      { sb: 1500, bb: 3000, ante: 3000, dur: 12, colorUp: false },              // 14
+      { sb: 2000, bb: 4000, ante: 4000, dur: 12, colorUp: false },              // 15
+      { sb: 3000, bb: 6000, ante: 6000, dur: 12, colorUp: false },              // 16
     ],
     players: [
       { id: 1, name: '', rebuys: 0, addons: 0, out: false, bustedAt: null },
@@ -56,8 +63,8 @@ function defaultState() {
     dealerIndex: 0,
 
     currentLevel: 0,
-    // absolute-time clock
-    timer: { endsAt: null, remainingMs: 15 * 60 * 1000, running: false },
+    // absolute-time clock (first level is 12 min)
+    timer: { endsAt: null, remainingMs: 12 * 60 * 1000, running: false },
 
     levelEnd: false,
     showRebuyModal: false,
@@ -469,6 +476,7 @@ const actions = {
   endTournament: () => doEndTournament(),
   newTournament: () => setState({ confirm: { title: 'Новый турнир?', body: 'Текущий турнир будет очищен: ребаи, вылеты и таймер сбросятся. Структуру и игроков можно оставить.', label: 'Начать новый', kind: 'newTournament' } }),
   dismissModal: () => setState({ showRebuyModal: false }),
+  closeGuide: () => { showGuide = false; render(); },
   confirmNo: () => setState({ confirm: null }),
   confirmYes: () => { const k = state.confirm && state.confirm.kind; if (k && confirmKinds[k]) confirmKinds[k](); else setState({ confirm: null }); },
 
@@ -656,6 +664,8 @@ const actions = {
 
 let clubReturn = 'setup';
 let viewTourneyId = null; // archive detail currently open (transient)
+let showGuide = false;    // tournament cheat-sheet modal (transient)
+function openGuide() { showGuide = true; render(); }
 
 function archiveText(rec) {
   const lines = [];
@@ -1499,7 +1509,44 @@ function modalsHtml(d) {
       </div>
     </div>`;
   }
+  if (showGuide) html += guideHtml();
   return html;
+}
+
+// ——— памятка турнира (cheat-sheet) ———
+function guideHtml() {
+  const cap = t => `<div style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--color-accent);margin:14px 0 4px">${t}</div>`;
+  return `
+  <div class="dialog-backdrop" data-dismissable="true" data-dismiss-action="closeGuide">
+    <div class="dialog" style="width:min(560px,100%);max-height:86vh;overflow-y:auto;align-items:stretch;text-align:left">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <div class="dialog-title">Памятка турнира</div>
+        <button class="btn btn-icon" data-action="closeGuide" title="Закрыть" style="color:var(--color-neutral-700)">×</button>
+      </div>
+      <p class="text-muted" style="font-size:13px;margin:0">Домашний формат: 5–7 игроков · бай-ин 200 ₽ = 2000 фишек · уровни по 12 мин · ~3 часа.</p>
+
+      ${cap('Ребай / аддон')}
+      <div style="font-size:13px;line-height:1.5">Ребай 200 ₽ (2000 фишек) — первые <b>5 уровней</b>, только если стек <b>≤ 2000</b>. Аддон выключен.</div>
+
+      ${cap('Анте с 7-го уровня — «BB-анте»')}
+      <div style="font-size:13px;line-height:1.5">Платит <b>только игрок на большом блайнде</b>, ровно размер BB. Остальные ничего не кидают — без возни с мелочью. (В приложении в колонке «Анте» стоит то же число, что и BB.)</div>
+
+      ${cap('Замена фишек (color up)')}
+      <div style="font-size:13px;line-height:1.5">• После <b>6-го</b> уровня (на перерыве) — убрать со стола все <b>10 и 20</b>.<br>• После <b>8-го</b> — убрать все <b>50</b>. Дальше всё кратно 100.</div>
+
+      ${cap('Раздача фишек')}
+      <div style="font-size:13px;line-height:1.5">Номиналы 10/20/50/100/500/1000/5000.<br>
+        <b>Старт (2000):</b> 4×10 + 3×20 + 4×50 + 7×100 + 2×500.<br>
+        <b>Ребай (2000):</b> 2×50 + 4×100 + 1×500 + 1×1000.</div>
+
+      ${cap('Призовые')}
+      <div style="font-size:13px;line-height:1.5">• 5–6 игроков → <b>65 / 35</b> (двое).<br>• 7+ игроков → <b>50 / 30 / 20</b> (трое).<br><span class="text-muted">Меняется в настройке «Призовые, %» на экране «Структура».</span></div>
+
+      <div style="font-size:13px;line-height:1.5;margin-top:12px;color:var(--color-accent-800)">Перерыв 10 мин после 6-го уровня уже стоит в структуре.</div>
+
+      <button class="btn btn-primary btn-block" style="margin-top:16px" data-action="closeGuide">Понятно</button>
+    </div>
+  </div>`;
 }
 
 // ——— settings panel ———
@@ -1527,6 +1574,8 @@ themeOptsEl.addEventListener('click', (e) => {
 });
 soundSwitch.addEventListener('click', () => setState(s => ({ soundOn: !s.soundOn })));
 nextSwitch.addEventListener('click', () => setState(s => ({ showNextBlinds: !s.showNextBlinds })));
+const guideBtn = document.getElementById('guideBtn');
+if (guideBtn) guideBtn.addEventListener('click', () => { settingsPanel.classList.add('hidden'); openGuide(); });
 
 // ——— event delegation ———
 screenEl.addEventListener('click', (e) => {
@@ -1564,6 +1613,7 @@ modalsEl.addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   if (state.confirm) actions.confirmNo();
+  else if (showGuide) actions.closeGuide();
   else if (state.showRebuyModal) actions.dismissModal();
 });
 

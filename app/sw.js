@@ -1,7 +1,7 @@
 /* Покерный таймер — service worker.
    Precaches the whole (tiny) app so it launches offline once installed —
    important for a timer used at a table where wifi may drop. */
-const CACHE = 'pk-timer-v8';
+const CACHE = 'pk-timer-v10';
 const ASSETS = [
   './',
   './index.html',
