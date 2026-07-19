@@ -120,8 +120,10 @@ function rndId() {
 }
 
 // ═══════════ optional cloud sync (Supabase) — local-first, degrades gracefully ═══════════
+const ACTIVE_CLUB_KEY = 'pkActiveClub'; // which club this device shows
+const LOCAL_CLUB_KEY = 'pkLocalClub';   // which club the current local archive/roster belongs to
 let sb = null;
-let cloud = { status: 'off', session: null, club: null, email: '', pendingEmail: '', lastSync: 0, busy: false };
+let cloud = { status: 'off', session: null, club: null, clubs: [], isOwner: true, email: '', pendingEmail: '', lastSync: 0, busy: false };
 function cloudConfigured() {
   const c = window.PK_SUPABASE || {};
   return !!(c.url && c.anonKey && !/ВАШ_|YOUR_/.test(c.url) && !/ВАШ_|YOUR_/.test(c.anonKey));
@@ -149,13 +151,29 @@ function initCloud() {
 async function onSignedIn(session) {
   cloud.session = session; cloud.email = session.user.email || ''; cloud.status = 'syncing'; render();
   try {
-    const { data, error } = await sb.rpc('ensure_club');
+    // RLS lets us read every club we can access (owned + joined by code)
+    let { data: clubs, error } = await sb.from('clubs').select('*');
     if (error) throw error;
-    cloud.club = Array.isArray(data) ? data[0] : data;
+    if (!clubs || !clubs.length) {
+      const { data, error: e2 } = await sb.rpc('ensure_club'); // first time → create our own
+      if (e2) throw e2;
+      clubs = [Array.isArray(data) ? data[0] : data];
+    }
+    cloud.clubs = clubs;
+    setActiveClub(pickActiveClub(clubs, session.user.id), session.user.id);
     await syncMerge();
     cloud.status = 'synced'; cloud.lastSync = Date.now();
   } catch (e) { cloud.status = 'error'; }
   render();
+}
+function pickActiveClub(clubs, uid) {
+  let savedId = null; try { savedId = localStorage.getItem(ACTIVE_CLUB_KEY); } catch (e) {}
+  return clubs.find(c => c.id === savedId) || clubs.find(c => c.owner === uid) || clubs[0];
+}
+function setActiveClub(club, uid) {
+  cloud.club = club;
+  cloud.isOwner = !!(club && club.owner === (uid || (cloud.session && cloud.session.user.id)));
+  try { if (club) localStorage.setItem(ACTIVE_CLUB_KEY, club.id); } catch (e) {}
 }
 async function syncMerge() {
   if (!sb || !cloud.club) return;
@@ -164,18 +182,28 @@ async function syncMerge() {
   const { data: tours, error } = await sb.from('tournaments').select('id,payload').eq('club_id', cloud.club.id);
   if (error) throw error;
   const cloudArchive = (tours || []).map(t => ({ id: t.id, ...(t.payload || {}) }));
-  // roster: union by lowercased name
-  const rmap = {};
-  [...cloudRoster, ...roster].forEach(r => { const k = (r.name || '').trim().toLowerCase(); if (k && !rmap[k]) rmap[k] = { name: r.name }; });
-  roster = Object.values(rmap); saveRoster();
-  // archive: union by id
-  const amap = {};
-  [...cloudArchive, ...archive].forEach(t => { if (t.id && !amap[t.id]) amap[t.id] = t; });
-  archive = Object.values(amap).sort((a, b) => new Date(b.date) - new Date(a.date)); saveArchive();
-  // push the union back so the cloud has everything too
-  await pushRoster();
-  const missing = archive.filter(t => !cloudArchive.some(c => c.id === t.id));
-  for (const t of missing) await pushTournament(t);
+
+  let localClub = null; try { localClub = localStorage.getItem(LOCAL_CLUB_KEY); } catch (e) {}
+  const switching = localClub && localClub !== cloud.club.id; // moved to a *different* club → don't merge, replace
+
+  if (switching) {
+    roster = cloudRoster.map(r => ({ name: r.name }));
+    archive = cloudArchive.slice().sort((a, b) => new Date(b.date) - new Date(a.date));
+    saveRoster(); saveArchive();
+  } else {
+    // same club (or first login) → union, folding in any offline-local additions
+    const rmap = {};
+    [...cloudRoster, ...roster].forEach(r => { const k = (r.name || '').trim().toLowerCase(); if (k && !rmap[k]) rmap[k] = { name: r.name }; });
+    roster = Object.values(rmap); saveRoster();
+    const amap = {};
+    [...cloudArchive, ...archive].forEach(t => { if (t.id && !amap[t.id]) amap[t.id] = t; });
+    archive = Object.values(amap).sort((a, b) => new Date(b.date) - new Date(a.date)); saveArchive();
+    // push the union back so the cloud has everything too
+    await pushRoster();
+    const missing = archive.filter(t => !cloudArchive.some(c => c.id === t.id));
+    for (const t of missing) await pushTournament(t);
+  }
+  try { localStorage.setItem(LOCAL_CLUB_KEY, cloud.club.id); } catch (e) {}
   cloud.busy = false;
 }
 async function pushRoster() {
@@ -574,7 +602,10 @@ const actions = {
     else fallbackCopy(text, done);
   },
   closeClub: () => setState({ screen: clubReturn || 'setup' }),
-  clearArchive: () => setState({ confirm: { title: 'Очистить архив?', body: 'Все сохранённые турниры и таблица сезона будут удалены' + (cloudOn() ? ' (и в облаке тоже)' : '') + '. Ростер игроков останется. Действие необратимо.', label: 'Очистить', kind: 'clearArchive' } }),
+  clearArchive: () => {
+    if (cloudOn() && !cloud.isOwner) { showToast('Очищать архив может только владелец клуба'); return; }
+    setState({ confirm: { title: 'Очистить архив?', body: 'Все сохранённые турниры и таблица сезона будут удалены' + (cloudOn() ? ' (и в облаке тоже)' : '') + '. Ростер игроков останется. Действие необратимо.', label: 'Очистить', kind: 'clearArchive' } });
+  },
 
   // ——— cloud auth / sync ———
   cloudSendCode: () => {
@@ -591,8 +622,16 @@ const actions = {
       .then(({ error }) => { if (error) showToast('Неверный код'); /* onAuthStateChange handles success */ });
   },
   cloudChangeEmail: () => { cloud.status = 'signedout'; cloud.pendingEmail = ''; render(); },
-  cloudSignOut: () => { if (sb) sb.auth.signOut(); cloud.session = null; cloud.club = null; cloud.status = 'signedout'; render(); },
+  cloudSignOut: () => { if (sb) sb.auth.signOut(); cloud.session = null; cloud.club = null; cloud.clubs = []; cloud.isOwner = true; cloud.status = 'signedout'; render(); },
   cloudSyncNow: () => { if (cloud.session) onSignedIn(cloud.session); },
+  cloudSwitchClub: (e) => {
+    const id = e.currentTarget.dataset.id;
+    const club = cloud.clubs.find(c => c.id === id);
+    if (!club || (cloud.club && club.id === cloud.club.id)) return;
+    cloud.status = 'syncing'; render();
+    setActiveClub(club);
+    syncMerge().then(() => { cloud.status = 'synced'; render(); }).catch(() => { cloud.status = 'error'; render(); });
+  },
   cloudJoin: () => {
     if (!cloud.session) { showToast('Сначала войдите по email'); return; }
     const el = document.getElementById('cloud-clubcode'); const code = (el && el.value || '').trim();
@@ -600,8 +639,13 @@ const actions = {
     cloud.status = 'syncing'; render();
     sb.rpc('join_club', { club_code: code }).then(async ({ data, error }) => {
       if (error) { cloud.status = 'synced'; showToast('Клуб не найден'); render(); return; }
-      cloud.club = Array.isArray(data) ? data[0] : data;
-      try { await syncMerge(); cloud.status = 'synced'; showToast('Клуб подключён'); } catch (e) { cloud.status = 'error'; }
+      const joined = Array.isArray(data) ? data[0] : data;
+      try {
+        const { data: clubs } = await sb.from('clubs').select('*');
+        cloud.clubs = clubs && clubs.length ? clubs : [joined];
+        setActiveClub(cloud.clubs.find(c => c.id === joined.id) || joined);
+        await syncMerge(); cloud.status = 'synced'; showToast('Клуб подключён');
+      } catch (e) { cloud.status = 'error'; }
       render();
     });
   },
@@ -1239,19 +1283,35 @@ function cloudCardHtml() {
   if (cloud.status === 'syncing') return wrap(`<div class="text-muted" style="font-size:13px">Синхронизация…</div>`);
   // synced / error (signed in)
   const code = cloud.club ? cloud.club.code : '';
+  const roleTag = cloud.isOwner
+    ? '<span class="tag tag-accent" style="font-size:10px">Владелец</span>'
+    : '<span class="tag tag-neutral" style="font-size:10px">Участник</span>';
   const err = cloud.status === 'error' ? `<div style="color:var(--pk-danger,#c0662f);font-size:12px;margin-top:6px">Последняя синхронизация не удалась — данные сохранены локально.</div>` : '';
+  // switcher only when the user has access to more than one club
+  const switcher = (cloud.clubs && cloud.clubs.length > 1) ? `
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px">
+      <span class="text-muted" style="font-size:12px">Клуб:</span>
+      ${cloud.clubs.map(c => `<button class="pk-theme-opt ${c.id === cloud.club.id ? 'is-active' : ''}" data-action="cloudSwitchClub" data-id="${esc(c.id)}" style="font-size:12px">${c.owner === cloud.session.user.id ? 'Мой' : 'Код ' + esc(c.code)}</button>`).join('')}
+    </div>` : '';
   return wrap(`
     <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
-      <div style="font-size:13px">Вошли как <b>${esc(cloud.email)}</b>${code ? ` · код клуба <b class="pk-num" style="color:var(--color-accent)">${esc(code)}</b>` : ''}</div>
+      <div style="font-size:13px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span>Вошли как <b>${esc(cloud.email)}</b></span> ${roleTag}
+        ${code ? `<span class="text-muted">· код клуба <b class="pk-num" style="color:var(--color-accent)">${esc(code)}</b></span>` : ''}
+      </div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-secondary" data-action="cloudSyncNow">⟳ Синхронизировать</button>
         <button class="btn btn-ghost" data-action="cloudSignOut">Выйти</button>
       </div>
     </div>
-    <div class="text-muted" style="font-size:12px;margin-top:6px">Откройте приложение на другом устройстве и войдите <b>тем же email</b> — увидите те же данные. Код клуба нужен, только если к вашему клубу подключается <b>другой человек</b>.</div>
+    ${switcher}
+    <div class="text-muted" style="font-size:12px;margin-top:8px">${cloud.isOwner
+      ? 'Вы владелец: можете добавлять и <b>удалять</b> турниры. Дайте друзьям код клуба — они смогут смотреть и добавлять, но не удалять.'
+      : 'Вы участник этого клуба: можно смотреть и добавлять турниры. Удалять/очищать архив может только владелец.'}</div>
+    <div class="text-muted" style="font-size:12px;margin-top:4px">Свой архив на другом своём устройстве — войдите <b>тем же email</b> (код не нужен).</div>
     ${err}
     <details class="pk-details" style="margin-top:10px">
-      <summary class="text-muted" style="font-size:12px">Подключиться к чужому клубу по коду ▾</summary>
+      <summary class="text-muted" style="font-size:12px">Подключиться к клубу друга по коду ▾</summary>
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
         <input class="input" id="cloud-clubcode" placeholder="Код клуба" style="flex:1;min-width:160px">
         <button class="btn btn-secondary" data-action="cloudJoin">Подключить</button>
@@ -1375,7 +1435,7 @@ function clubHtml() {
 
     <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px">
       <h4 style="margin:0;font-size:15px;letter-spacing:.06em;text-transform:uppercase;color:var(--color-neutral-700)">Архив турниров (${archive.length})</h4>
-      ${archive.length ? '<button class="btn btn-ghost pk-btn-danger" data-action="clearArchive" style="font-size:12px">Очистить архив</button>' : ''}
+      ${(archive.length && !(cloudOn() && !cloud.isOwner)) ? '<button class="btn btn-ghost pk-btn-danger" data-action="clearArchive" style="font-size:12px">Очистить архив</button>' : ''}
     </div>
     <div style="display:flex;flex-direction:column;gap:8px">${archiveRows || '<div class="text-muted" style="font-size:13px">Архив пуст.</div>'}</div>
 
