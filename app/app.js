@@ -149,6 +149,8 @@ function initCloud() {
   } catch (e) { cloud.status = 'off'; }
 }
 async function onSignedIn(session) {
+  if (cloud.signingIn) return; // guard against concurrent calls (getSession + onAuthStateChange) racing ensure_club
+  cloud.signingIn = true;
   cloud.session = session; cloud.email = session.user.email || ''; cloud.status = 'syncing'; render();
   try {
     // RLS lets us read every club we can access (owned + joined by code)
@@ -164,6 +166,7 @@ async function onSignedIn(session) {
     await syncMerge();
     cloud.status = 'synced'; cloud.lastSync = Date.now();
   } catch (e) { cloud.status = 'error'; }
+  cloud.signingIn = false;
   render();
 }
 function pickActiveClub(clubs, uid) {
@@ -590,7 +593,7 @@ const actions = {
     render();
   },
 
-  openClub: () => { clubReturn = state.screen; viewTourneyId = null; setState({ screen: 'club' }); },
+  openClub: () => { if (state.screen !== 'club') clubReturn = state.screen; viewTourneyId = null; setState({ screen: 'club' }); },
   openTourney: (e) => { viewTourneyId = e.currentTarget.dataset.id; render(); },
   closeTourney: () => { viewTourneyId = null; render(); },
   copyTourney: (e) => {
@@ -601,7 +604,7 @@ const actions = {
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
     else fallbackCopy(text, done);
   },
-  closeClub: () => setState({ screen: clubReturn || 'setup' }),
+  closeClub: () => setState({ screen: (clubReturn && clubReturn !== 'club') ? clubReturn : 'setup' }),
   clearArchive: () => {
     if (cloudOn() && !cloud.isOwner) { showToast('Очищать архив может только владелец клуба'); return; }
     setState({ confirm: { title: 'Очистить архив?', body: 'Все сохранённые турниры и таблица сезона будут удалены' + (cloudOn() ? ' (и в облаке тоже)' : '') + '. Ростер игроков останется. Действие необратимо.', label: 'Очистить', kind: 'clearArchive' } });
@@ -1291,8 +1294,9 @@ function cloudCardHtml() {
   const switcher = (cloud.clubs && cloud.clubs.length > 1) ? `
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px">
       <span class="text-muted" style="font-size:12px">Клуб:</span>
-      ${cloud.clubs.map(c => `<button class="pk-theme-opt ${c.id === cloud.club.id ? 'is-active' : ''}" data-action="cloudSwitchClub" data-id="${esc(c.id)}" style="font-size:12px">${c.owner === cloud.session.user.id ? 'Мой' : 'Код ' + esc(c.code)}</button>`).join('')}
-    </div>` : '';
+      ${cloud.clubs.map(c => `<button class="pk-theme-opt ${c.id === cloud.club.id ? 'is-active' : ''}" data-action="cloudSwitchClub" data-id="${esc(c.id)}" style="font-size:12px">${(c.owner === cloud.session.user.id ? 'Мой' : 'Друга') + ' · ' + esc(c.code)}</button>`).join('')}
+    </div>
+    <div class="text-muted" style="font-size:11px;margin-top:4px">Несколько клубов? Откройте нужный и удалите лишний пустой (см. инструкцию).</div>` : '';
   return wrap(`
     <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
       <div style="font-size:13px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
